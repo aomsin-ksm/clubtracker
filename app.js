@@ -133,7 +133,20 @@ function loginView(){
     '<div class="apphead"><div class="logo">'+I.logo+'</div><h1>Club Tracker</h1><p>ติดตามงบประมาณ การเข้าร่วมกิจกรรม และรายชื่อสมาชิกของชมรมในที่เดียว</p></div>'+
     '<div id="gbtn" style="display:flex;justify-content:center;min-height:44px"></div>'+
     '<p class="err" id="li-err" role="alert" style="text-align:center"></p>'+
-    '<p class="hint" id="li-hint" style="text-align:center">เข้าสู่ระบบด้วยบัญชี Google ที่ผู้ดูแลชมรมเพิ่มไว้ในระบบ</p></div></section></div></div>';
+    '<p class="hint" id="li-hint" style="text-align:center">'+HINT.login+'</p>'+
+    '<a class="btn block" href="#register">ยังไม่มีบัญชี? สร้างบัญชีใหม่</a></div></section></div></div>';
+}
+var HINT={login:'เข้าสู่ระบบด้วยบัญชี Google ที่ลงทะเบียนไว้'};
+var POSITIONS=['Member','President','Vice President','Secretary','Treasurer','Operations Head'];
+function registerView(){
+  return '<div class="wrap"><div class="auth"><section class="authcard"><form data-form="register" novalidate>'+
+    '<div class="apphead"><div class="logo">'+I.logo+'</div><h1>สร้างบัญชีใหม่</h1><p>ระบบจะออกรหัสสมาชิกให้อัตโนมัติ แล้วใช้อีเมลนี้เข้าสู่ระบบด้วย Google</p></div>'+
+    '<label class="f" for="rg-fn">ชื่อ<input class="in" id="rg-fn" autocomplete="given-name"></label>'+
+    '<label class="f" for="rg-ln">นามสกุล<input class="in" id="rg-ln" autocomplete="family-name"></label>'+
+    '<label class="f" for="rg-pos">ตำแหน่ง<select class="in" id="rg-pos">'+POSITIONS.map(function(p){return '<option>'+esc(p)+'</option>'}).join('')+'</select></label>'+
+    '<label class="f" for="rg-email">อีเมล (บัญชี Google ที่จะใช้ล็อกอิน)<input class="in" id="rg-email" type="email" autocomplete="email" placeholder="name@gmail.com"></label>'+
+    '<p class="err" id="rg-err" role="alert"></p>'+
+    '<div class="actions"><button class="btn primary block" type="submit">สร้างบัญชี</button><a class="btn block" href="#login">มีบัญชีแล้ว? เข้าสู่ระบบ</a></div></form></section></div></div>';
 }
 function dashView(u){
   var t=totals();
@@ -259,12 +272,13 @@ function statusView(){
 function go(h){if(location.hash==='#'+h)render();else location.hash=h}
 function render(keep){
   var h=(location.hash||'').slice(1)||'login',parts=h.split(/-(.+)/),name=parts[0],arg=parts[1],u=currentUser(),app=$('#app'),html;
-  if(name==='register'){go('login');return}
+  if(name==='register'&&u){go('dashboard');return}
   if(!loaded&&name!=='login'&&name!=='register'){app.innerHTML=statusView();return}
   if(name!=='login'&&name!=='register'&&!u){if(lsGet(SESS))lsSet(SESS,'');if(h!=='login'){go('login');return}name='login'}
   if((name==='login'||name==='register')&&u&&name==='login'&&!prefillId){/* stay on login if user navigates here */}
   var y=window.scrollY;
   if(name==='login')html=loginView();
+  else if(name==='register')html=registerView();
   else if(name==='events')html=eventsView();
   else if(name==='members')html=membersView(memberQuery);
   else if(name==='event'){var e=eventById(arg);if(!e){go('events');return}html=eventView(e)}
@@ -307,16 +321,37 @@ function onGoogle(resp){
     .then(function(res){
       if(res&&res.ok&&res.user){lsSet(SESS,JSON.stringify(res.user));go('dashboard');return}
       var e=res&&res.error,msg=
-        e==='not_registered'?'บัญชี '+(res.email||'Google นี้')+' ยังไม่ได้รับสิทธิ์เข้าใช้ ติดต่อผู้ดูแลชมรม':
+        e==='not_registered'?'บัญชี '+(res.email||'Google นี้')+' ยังไม่ได้ลงทะเบียน กด "สร้างบัญชีใหม่" ด้านล่าง':
         e==='inactive'?'บัญชีนี้ถูกระงับการใช้งาน ติดต่อผู้ดูแลชมรม':
         e==='no_sheet'||e==='bad_headers'||e==='no_client_id'?'ระบบบัญชีตั้งค่าไม่ถูกต้อง แจ้งผู้ดูแลชมรม':
         'ยืนยันตัวตนกับ Google ไม่สำเร็จ ลองใหม่อีกครั้ง';
       setErr('li-err',msg);
     })
     .catch(function(e){console.error('ล็อกอินไม่สำเร็จ:',e);setErr('li-err','เชื่อมต่อระบบบัญชีไม่ได้ ตรวจอินเทอร์เน็ตแล้วลองใหม่')})
-    .then(function(){var h=$('#li-hint');if(h)h.textContent='เข้าสู่ระบบด้วยบัญชี Google ที่ผู้ดูแลชมรมเพิ่มไว้ในระบบ'});
+    .then(function(){var h=$('#li-hint');if(h)h.textContent=HINT.login});
 }
-function onSubmit(){}
+var EMAIL=/^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+function onSubmit(form){
+  if(form.dataset.form!=='register')return;
+  var fn=$('#rg-fn').value.trim(),ln=$('#rg-ln').value.trim(),pos=$('#rg-pos').value,email=$('#rg-email').value.trim().toLowerCase(),btn=form.querySelector('button[type=submit]');
+  if(!fn||!ln||!email){setErr('rg-err','กรอกชื่อ นามสกุล และอีเมลให้ครบ');return}
+  if(!EMAIL.test(email)){setErr('rg-err','รูปแบบอีเมลไม่ถูกต้อง');return}
+  if(!ACCOUNTS_API){setErr('rg-err','ยังไม่ได้ตั้งค่า ACCOUNTS_API ใน app.js');return}
+  setErr('rg-err','');btn.disabled=true;btn.textContent='กำลังสร้างบัญชี…';
+  fetch(ACCOUNTS_API,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'register',firstName:fn,lastName:ln,position:pos,email:email})})
+    .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json()})
+    .then(function(res){
+      if(res&&res.ok){toast('สร้างบัญชีสำเร็จ รหัสสมาชิกของคุณคือ '+res.memberId+' เข้าสู่ระบบด้วย Google ได้เลย');syncData();go('login');return}
+      var e=res&&res.error;
+      setErr('rg-err',
+        e==='email_exists'?'อีเมลนี้มีบัญชีอยู่แล้ว เข้าสู่ระบบได้เลย':
+        e==='invalid'?'กรอกข้อมูลให้ครบและถูกต้อง':
+        e==='busy'?'ระบบกำลังทำงานอยู่ ลองใหม่อีกครั้ง':
+        'ระบบบัญชีตั้งค่าไม่ถูกต้อง แจ้งผู้ดูแลชมรม');
+    })
+    .catch(function(e){console.error('สร้างบัญชีไม่สำเร็จ:',e);setErr('rg-err','เชื่อมต่อระบบบัญชีไม่ได้ ตรวจอินเทอร์เน็ตแล้วลองใหม่')})
+    .then(function(){if(document.body.contains(btn)){btn.disabled=false;btn.textContent='สร้างบัญชี'}});
+}
 document.addEventListener('submit',function(e){var f=e.target.closest('form[data-form]');if(f){e.preventDefault();onSubmit(f)}});
 
 /* ---------- actions ---------- */
