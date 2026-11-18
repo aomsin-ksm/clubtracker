@@ -57,13 +57,12 @@ function setTheme(t){document.documentElement.dataset.theme=t;lsSet(THEME,t);ren
 (function(){var t=lsGet(THEME);if(t==='light'||t==='dark')document.documentElement.dataset.theme=t})();
 
 function notifications(){
-  var out=[],me=currentUser(),myId=me?String(me.memberId).toUpperCase():'';
-  /* แจ้งเตือนวันจัดกิจกรรมเฉพาะคนที่มีชื่อในแท็บ attendance ของกิจกรรมนั้น (ไม่สนว่า status เป็นอะไร) */
-  function joined(eid){return !!myId&&db.attendance.some(function(a){return a.eventId===eid&&a.memberId===myId})}
+  var out=[];
+  /* แจ้งเตือนทุกกิจกรรมให้สมาชิกทุกคนในชมรม */
   db.events.slice().sort(byDate).forEach(function(e){
-    var d=dayDiff(e.date),u=used(e.eventId),b=+e.budget||0,j=joined(e.eventId);
-    if(j&&d===0)out.push({k:'warn',t:'วันนี้มีกิจกรรม '+e.name+' ที่ '+e.location});
-    else if(j&&d>0&&d<=3)out.push({k:'info',t:e.name+' อีก '+d+' วัน ('+fmtShort(e.date)+')'});
+    var d=dayDiff(e.date),u=used(e.eventId),b=+e.budget||0;
+    if(d===0)out.push({k:'warn',t:'วันนี้มีกิจกรรม '+e.name+' ที่ '+e.location});
+    else if(d>0&&d<=3)out.push({k:'info',t:e.name+' อีก '+d+' วัน ('+fmtShort(e.date)+')'});
     if(u>b)out.push({k:'bad',t:e.name+' ใช้งบเกิน '+baht(u-b)});
     else if(b>0&&u/b>=.8)out.push({k:'warn',t:e.name+' ใช้งบไปแล้ว '+(u/b*100).toFixed(0)+'%'});
   });
