@@ -3,6 +3,8 @@
 var SESS='lumina.session', THEME='lumina.theme';
 /* URL ของ Apps Script Web App ที่ผูกกับชีตบัญชีผู้ใช้ (ได้มาจากขั้นตอน Deploy) */
 var ACCOUNTS_API='https://script.google.com/macros/s/AKfycbw7BwmfyqfRsGbVcy2idp6-iahW26SfqNxishJ615O43FOZGMEQka2guYYDUT4GV6d2xw/exec';
+/* OAuth Client ID จาก Google Cloud Console (ลงท้ายด้วย .apps.googleusercontent.com) ต้องตรงกับใน Code.gs */
+var GOOGLE_CLIENT_ID='272476596276-5b3umo1qd6983aioftrui6reso4i23cv.apps.googleusercontent.com';
 var $=function(s,r){return (r||document).querySelector(s)};
 var mem={};
 function lsGet(k){try{var v=localStorage.getItem(k);if(v!==null)return v}catch(e){}return mem[k]===undefined?null:mem[k]}
@@ -55,11 +57,13 @@ function setTheme(t){document.documentElement.dataset.theme=t;lsSet(THEME,t);ren
 (function(){var t=lsGet(THEME);if(t==='light'||t==='dark')document.documentElement.dataset.theme=t})();
 
 function notifications(){
-  var out=[];
+  var out=[],me=currentUser(),myId=me?String(me.memberId).toUpperCase():'';
+  /* แจ้งเตือนวันจัดกิจกรรมเฉพาะคนที่มีชื่อในแท็บ attendance ของกิจกรรมนั้น (ไม่สนว่า status เป็นอะไร) */
+  function joined(eid){return !!myId&&db.attendance.some(function(a){return a.eventId===eid&&a.memberId===myId})}
   db.events.slice().sort(byDate).forEach(function(e){
-    var d=dayDiff(e.date),u=used(e.eventId),b=+e.budget||0;
-    if(d===0)out.push({k:'warn',t:'วันนี้มีกิจกรรม '+e.name+' ที่ '+e.location});
-    else if(d>0&&d<=3)out.push({k:'info',t:e.name+' อีก '+d+' วัน ('+fmtShort(e.date)+')'});
+    var d=dayDiff(e.date),u=used(e.eventId),b=+e.budget||0,j=joined(e.eventId);
+    if(j&&d===0)out.push({k:'warn',t:'วันนี้มีกิจกรรม '+e.name+' ที่ '+e.location});
+    else if(j&&d>0&&d<=3)out.push({k:'info',t:e.name+' อีก '+d+' วัน ('+fmtShort(e.date)+')'});
     if(u>b)out.push({k:'bad',t:e.name+' ใช้งบเกิน '+baht(u-b)});
     else if(b>0&&u/b>=.8)out.push({k:'warn',t:e.name+' ใช้งบไปแล้ว '+(u/b*100).toFixed(0)+'%'});
   });
@@ -126,12 +130,11 @@ function attChart(){
 /* ---------- views ---------- */
 var prefillId='';
 function loginView(){
-  return '<div class="wrap"><div class="auth"><section class="authcard"><form data-form="login" novalidate>'+
+  return '<div class="wrap"><div class="auth"><section class="authcard"><div style="display:grid;gap:16px">'+
     '<div class="apphead"><div class="logo">'+I.logo+'</div><h1>Club Tracker</h1><p>ติดตามงบประมาณ การเข้าร่วมกิจกรรม และรายชื่อสมาชิกของชมรมในที่เดียว</p></div>'+
-    '<label class="f" for="li-id">รหัสนิสิต<input class="in" id="li-id" autocomplete="username" value="'+esc(prefillId)+'"></label>'+
-    '<label class="f" for="li-pw">Password<input class="in" id="li-pw" type="password" autocomplete="current-password"></label>'+
-    '<p class="err" id="li-err" role="alert"></p>'+
-    '<div class="actions"><button class="btn primary block" type="submit">Log in</button></div><p class="hint" style="text-align:center">ยังไม่มีบัญชี ติดต่อผู้ดูแลชมรมเพื่อเพิ่มบัญชี</p></form></section></div></div>';
+    '<div id="gbtn" style="display:flex;justify-content:center;min-height:44px"></div>'+
+    '<p class="err" id="li-err" role="alert" style="text-align:center"></p>'+
+    '<p class="hint" id="li-hint" style="text-align:center">เข้าสู่ระบบด้วยบัญชี Google ที่ผู้ดูแลชมรมเพิ่มไว้ในระบบ</p></div></section></div></div>';
 }
 function dashView(u){
   var t=totals();
@@ -268,6 +271,7 @@ function render(keep){
   else if(name==='event'){var e=eventById(arg);if(!e){go('events');return}html=eventView(e)}
   else html=dashView(u);
   app.innerHTML=html;
+  if(name==='login')mountGoogle();
   document.title='Club Tracker';
   window.scrollTo(0,keep?y:0);
   if(name==='members'&&memberQuery){var mq=$('#mq');mq.focus();mq.setSelectionRange(mq.value.length,mq.value.length)}
@@ -278,22 +282,42 @@ window.addEventListener('hashchange',function(){if(location.hash!=='#members')me
 function val(id){return ($('#'+id).value||'').trim()}
 function setErr(id,msg){$('#'+id).textContent=msg}
 
-function apiLogin(id,pw){
-  return fetch(ACCOUNTS_API,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'login',id:id,password:pw})})
-    .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json()});
+/* ---------- Log in with Google ---------- */
+var gisReady=null,gisInit=false;
+function loadGIS(){
+  if(gisReady)return gisReady;
+  gisReady=new Promise(function(ok,fail){
+    var sc=document.createElement('script');sc.src='https://accounts.google.com/gsi/client';sc.async=true;
+    sc.onload=ok;sc.onerror=function(){gisReady=null;fail(new Error('โหลด Google Sign-In ไม่ได้'))};
+    document.head.appendChild(sc);
+  });
+  return gisReady;
 }
-function onSubmit(form){
-  if(form.dataset.form!=='login')return;
-  var id=val('li-id'),pw=$('#li-pw').value,btn=form.querySelector('button[type=submit]');
-  if(!id||!pw){setErr('li-err','กรอกรหัสนิสิตและรหัสผ่านให้ครบ');return}
-  if(!ACCOUNTS_API){setErr('li-err','ยังไม่ได้ตั้งค่า ACCOUNTS_API ใน app.js');return}
-  setErr('li-err','');btn.disabled=true;btn.textContent='กำลังตรวจสอบ…';
-  apiLogin(id,pw).then(function(res){
-    if(!res||!res.ok||!res.user){setErr('li-err',res&&res.error==='no_sheet'||res&&res.error==='bad_headers'?'ชีตบัญชีตั้งค่าไม่ถูกต้อง แจ้งผู้ดูแลชมรม':'รหัสนิสิตหรือรหัสผ่านไม่ถูกต้อง');return}
-    prefillId='';lsSet(SESS,JSON.stringify(res.user));go('dashboard');
-  }).catch(function(e){console.error('ล็อกอินไม่สำเร็จ:',e);setErr('li-err','เชื่อมต่อระบบบัญชีไม่ได้ ตรวจอินเทอร์เน็ตแล้วลองใหม่')})
-  .then(function(){if(document.body.contains(btn)){btn.disabled=false;btn.textContent='Log in'}});
+function mountGoogle(){
+  if(!GOOGLE_CLIENT_ID||!ACCOUNTS_API){setErr('li-err','ยังไม่ได้ตั้งค่า GOOGLE_CLIENT_ID หรือ ACCOUNTS_API ใน app.js');return}
+  loadGIS().then(function(){
+    var el=$('#gbtn');if(!el)return;
+    if(!gisInit){google.accounts.id.initialize({client_id:GOOGLE_CLIENT_ID,callback:onGoogle,auto_select:false,cancel_on_tap_outside:true});gisInit=true}
+    google.accounts.id.renderButton(el,{theme:'outline',size:'large',shape:'pill',text:'signin_with',locale:'th',width:Math.min(320,el.clientWidth||320)});
+  }).catch(function(e){console.error(e);setErr('li-err','โหลดปุ่ม Google ไม่ได้ ตรวจอินเทอร์เน็ตหรือปิดตัวบล็อกโฆษณาแล้วรีเฟรช')});
 }
+function onGoogle(resp){
+  var hint=$('#li-hint');setErr('li-err','');if(hint)hint.textContent='กำลังตรวจสอบบัญชี…';
+  fetch(ACCOUNTS_API,{method:'POST',headers:{'Content-Type':'text/plain;charset=utf-8'},body:JSON.stringify({action:'google',credential:resp.credential})})
+    .then(function(r){if(!r.ok)throw new Error('HTTP '+r.status);return r.json()})
+    .then(function(res){
+      if(res&&res.ok&&res.user){lsSet(SESS,JSON.stringify(res.user));go('dashboard');return}
+      var e=res&&res.error,msg=
+        e==='not_registered'?'บัญชี '+(res.email||'Google นี้')+' ยังไม่ได้รับสิทธิ์เข้าใช้ ติดต่อผู้ดูแลชมรม':
+        e==='inactive'?'บัญชีนี้ถูกระงับการใช้งาน ติดต่อผู้ดูแลชมรม':
+        e==='no_sheet'||e==='bad_headers'||e==='no_client_id'?'ระบบบัญชีตั้งค่าไม่ถูกต้อง แจ้งผู้ดูแลชมรม':
+        'ยืนยันตัวตนกับ Google ไม่สำเร็จ ลองใหม่อีกครั้ง';
+      setErr('li-err',msg);
+    })
+    .catch(function(e){console.error('ล็อกอินไม่สำเร็จ:',e);setErr('li-err','เชื่อมต่อระบบบัญชีไม่ได้ ตรวจอินเทอร์เน็ตแล้วลองใหม่')})
+    .then(function(){var h=$('#li-hint');if(h)h.textContent='เข้าสู่ระบบด้วยบัญชี Google ที่ผู้ดูแลชมรมเพิ่มไว้ในระบบ'});
+}
+function onSubmit(){}
 document.addEventListener('submit',function(e){var f=e.target.closest('form[data-form]');if(f){e.preventDefault();onSubmit(f)}});
 
 /* ---------- actions ---------- */
@@ -305,7 +329,7 @@ document.addEventListener('click',function(e){
   else if(a==='bell'){var p=$('.bellpanel');p.hidden=!p.hidden;t.setAttribute('aria-expanded',String(!p.hidden));if(!p.hidden){markSeen();var bg=t.querySelector('.badge');if(bg)bg.remove()}}
   else if(a==='retry'){sync={state:'loading',time:null};updateSyncNote();render(true);syncData()}
   else if(a==='menu')$('#side').classList.toggle('open');
-  else if(a==='logout'){lsSet(SESS,'');go('login')}
+  else if(a==='logout'){lsSet(SESS,'');try{google.accounts.id.disableAutoSelect()}catch(err){}go('login')}
 });
 document.addEventListener('input',function(e){if(e.target.id==='mq'){memberQuery=e.target.value;render(true)}});
 document.addEventListener('keydown',function(e){if(e.key==='Escape'){var bp=$('.bellpanel');if(bp)bp.hidden=true}});
